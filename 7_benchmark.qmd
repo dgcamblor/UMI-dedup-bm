@@ -1,0 +1,385 @@
+---
+title: "7_benchmark.qmd"
+author: "@dgcamblor"
+description: "This script benchmarks the deduplication variant calling results."
+toc: true
+number-sections: true
+---
+
+```{r}
+# Set working directory
+setwd("/media/scratchDELLEMC/dedup_bm")
+```
+
+```{r}
+# Load libraries
+pacman::p_load(tidyverse); set_theme(theme_bw())
+pacman::p_load(vcfR)
+```
+
+```{r}
+load_functions <- function(path) {
+  for (f in list.files(path=path, pattern="*.R")) {
+    source(paste(path, f, sep="/"))
+  }
+}
+
+load_functions("R")
+```
+
+# Sample statistics
+
+An important characteristic of the deduplication process is the UMI ratio and the median coverage. The UMI ratio is the number of UMIs divided by the number of reads. Both of these stats are stored in the `stats_summary.csv` file, obtained from `gather_stats.sh`.
+
+## BRP
+
+```{r}
+sample_stats_brp <- read.csv("stats/stats_summary.csv")
+
+sample_means_brp <- sample_stats_brp %>% 
+  summarize(mean_umi_ratio = mean(umi_ratio),
+            mean_median_cov = mean(median_cov))
+
+print(paste("BRP mean UMI ratio:", sample_means_brp$mean_umi_ratio))
+print(paste("BRP mean median coverage:", sample_means_brp$mean_median_cov))
+```
+
+## UMIvar
+
+```{r}
+sample_stats_umivar <- read.csv("stats/umivar/stats_summary.csv")
+
+sample_means_umivar <- sample_stats_umivar %>% 
+  summarize(mean_umi_ratio = mean(umi_ratio),
+            mean_median_cov = mean(median_cov))
+
+print(paste("UMIvar mean UMI ratio:", sample_means_umivar$mean_umi_ratio))
+print(paste("UMIvar mean median coverage:", sample_means_umivar$mean_median_cov))
+```
+
+## Example plots for deduplication software stats
+
+We can plot the stats outputted by several deduplication software.
+
+```{r}
+plot_stats_FGB("stats/SRR13200987/SRR13200987.dedup_FGB.grouped.hist.txt")
+plot_stats_MD("stats/SRR13200987/SRR13200987.dedup_MD.metrics")
+plot_stats_UT("stats/SRR13200987/SRR13200987.dedup_UT.stats_per_umi_per_position.tsv")
+```
+
+```{r}
+plot_stats_FGB("stats/umivar/EN104/EN104.dedup_FGB.grouped.hist.txt")
+plot_stats_MD("stats/umivar/EN104/EN104.dedup_MD.metrics")
+plot_stats_UT("stats/umivar/EN104/EN104.dedup_UT.stats_per_umi_per_position.tsv")
+```
+
+# UMIvar testing
+
+To test the functioning of UMIvar alone, a pilot study was conducted. The `comp_umivar_test.csv` file is obtained from the `utils/test_umivar.sh` script.
+
+```{r}
+testing_results <- read.csv("results_umivar/test_umivar_results.csv")
+
+testing_results_longer <- testing_results %>% pivot_longer(cols = starts_with("EP"), names_to = "EP_sample", values_to = "EP_equivalent")
+```
+
+```{r}
+# Compute the RMSE for the UMIvar testing
+rmse <- sqrt(mean((testing_results_longer$EP_equivalent - testing_results_longer$af)^2))
+print(paste0("The RMSE for the UMIvar AFs is: ", rmse))
+```
+
+We can flag those variants that are outliers, i.e. those that have in the 5% of the distribution of the absolute difference between the UMIvar AF and the equivalent EP AF.
+
+```{r}
+testing_results <- testing_results %>%
+  mutate(mean_EP = rowMeans(select(., starts_with("EP"))),
+         abs_diff = abs(af - mean_EP)) %>%
+  mutate(outlier = ifelse(abs_diff > quantile(abs_diff, 0.95), "yes", "no"))
+```
+
+Finally, we can plot the testing results.
+
+```{r}
+testing_results %>%
+  ggplot(aes(x = af, y = mean_EP, color = outlier)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "blue") +
+  labs(x = "UMIvar input AF", y = "VarDict called AF") +
+  scale_color_manual(values = c("black", "red"))
+```
+
+# Benchmarking
+
+We now will perform the benchmark, choosing either the real dataset or the synthetic one created with UMIvar.
+
+```{r}
+profile <- "BRP"  #CONFIG: Profile can be either "BRP" or "UMIVAR"
+
+if (profile == "BRP") {
+  true_variants <- extract_variants("metadata/KnownPositives_hg19_target_norm.vcf", af_meta="fix", af_name="VAF")
+  accessions <- c("SRR13200987", "SRR13200988", "SRR13200990", "SRR13200991", 
+                  "SRR13200996", "SRR13200997", "SRR13200998", "SRR13200999")
+  results_dir <- "results_brp"
+  
+} else {
+  true_variants <- extract_variants_umivar("metadata/umivar_input.csv")
+  accessions <- c("EN21", "EN32", "EN43", "EN47", "EN51", 
+                  "EN55", "EN61", "EN68", "EN80", "EN86", 
+                  "EN88", "EN90", "EN92", "EN100", "EN102", 
+                  "EN104", "EN110", "EN114", "EN131", "EN140", 
+                  "EN146", "EN158", "EN161", "EN185")
+  results_dir <- "results_umivar"
+}
+```
+
+## Mutect2
+
+```{r}
+mutect2 <- run_vc_benchmark("mutect2", profile = profile)
+bechmarks_mutect2 <- mutect2$benchmarks; stats_mutect2 <- mutect2$stats
+```
+
+```{r}
+mean_mutect2 <- summarize_vc_stats(stats_mutect2)
+```
+
+## Lofreq
+
+```{r}
+lofreq <- run_vc_benchmark("lofreq", profile = profile)
+benchmarks_lofreq <- lofreq$benchmarks; stats_lofreq <- lofreq$stats
+```
+
+```{r}
+mean_lofreq <- summarize_vc_stats(stats_lofreq)
+```
+
+## VarDict
+
+```{r}
+vardict <- run_vc_benchmark("vardict", profile = "UMIVAR")
+benchmarks_vardict <- vardict$benchmarks; stats_vardict <- vardict$stats
+```
+
+```{r}
+mean_vardict <- summarize_vc_stats(stats_vardict)
+```
+
+# TP, FP and FN
+
+```{r}
+#CONFIG: Benchmarked pipelines
+level_order <- c("FGB", "UT", "GC", "UCOL", "MD")
+full_names <- c("fgbio", "UMI-tools", "gencore", "UMICollapse", "MarkDuplicates")
+```
+
+## Mutect2
+
+True positives:
+
+```{r}
+dedup_bm_barplot(mean_mutect2, "tp", level_order, full_names,
+                 title = "Mean true positives for Mutect2", 
+                 image_path = "plots/mean_tp_mutect2.tiff") +
+  coord_cartesian(ylim = c(450, 550))
+```
+
+False positives:
+
+```{r}
+dedup_bm_barplot(mean_mutect2, "fp", level_order, full_names,
+                 title = "Mean false positives for Mutect2", 
+                 image_path = "plots/mean_fp_mutect2.tiff", 
+                 hjust = -0.2)
+```
+
+## LoFreq
+
+True positives:
+
+```{r}
+dedup_bm_barplot(mean_lofreq, "tp", level_order, full_names,
+                 title = "Mean true positives for LoFreq", 
+                 image_path = "plots/mean_tp_lofreq.tiff")
+```
+
+False positives:
+
+```{r}
+dedup_bm_barplot(mean_lofreq, "fp", level_order, full_names,
+                 title = "Mean false positives for LoFreq", 
+                 image_path = "plots/mean_fp_lofreq.tiff", 
+                 hjust = -0.1,
+                 vjust = 2)
+```
+
+## VarDict
+
+True positives:
+
+```{r}
+dedup_bm_barplot(mean_vardict, "tp", level_order, full_names,
+                 title = "Mean true positives for VarDict", 
+                 image_path = "plots/mean_tp_vardict.tiff")
+```
+
+False positives:
+
+```{r}
+dedup_bm_barplot(mean_vardict, "fp", level_order, full_names,
+                 title = "Mean false positives for VarDict", 
+                 image_path = "plots/mean_fp_vardict.tiff", 
+                 hjust = -0.1)
+```
+
+# Recall and precision
+
+## Mutect2
+
+```{r}
+rp_plot(stats_mutect2, pipeline_names, level_order, full_names, 
+        title = "Recall vs. precision for Mutect2", 
+        image_path = "plots/rp_mutect2.tiff")
+```
+
+## LoFreq
+
+```{r}
+rp_plot(stats_lofreq, pipeline_names, level_order, full_names, 
+        title = "Recall vs. precision for LoFreq", 
+        image_path = "plots/rp_lofreq.tiff")
+```
+
+## VarDict
+
+```{r}
+rp_plot(stats_vardict, pipeline_names, level_order, full_names, 
+        title = "Recall vs. precision for VarDict", 
+        image_path = "plots/rp_vardict.tiff")
+```
+
+# Venn diagrams
+
+We can plot the Venn diagrams for the true positives of each deduplication to see the overlap and differences between them.
+
+```{r}
+colors <- c("#f47474", "#3cbc7c", "#e46cf4", "#34b4f4", "#a4a424")
+```
+
+## Mutect2
+
+```{r}
+# Convert each list of GeneticVariants in benchmarks_mutect2[[1]] to a list of characters
+tp_mutect2 <- get_tp(benchmarks_mutect2[[1]])
+
+for (pipeline in get_pipeline_names(benchmarks_mutect2[[1]])) {
+  tp_mutect2[[pipeline]] <- as.character(lapply(get_tp(benchmarks_mutect2[[1]])[[pipeline]], get_variant))
+}
+
+VennDiagram::venn.diagram(
+  x = tp_mutect2,
+  category.names = c("FGB", "GC", "MD", "UCOL", "UT"),
+  fill = colors,
+  filename = "plots/venn_mutect2.tiff",
+  margin = 0.15,
+  lwd = 2,
+  cex = 1.3,
+  fontface = "bold",
+  cat.fontface = "bold"
+)
+```
+
+## LoFreq
+
+```{r}
+# Convert each list of GeneticVariants in benchmarks_lofreq[[1]] to a list of characters
+tp_lofreq <- get_tp(benchmarks_lofreq[[1]])
+
+for (pipeline in get_pipeline_names(benchmarks_lofreq[[1]])) {
+  tp_lofreq[[pipeline]] <- as.character(lapply(get_tp(benchmarks_lofreq[[1]])[[pipeline]], get_variant))
+}
+
+VennDiagram::venn.diagram(
+  x = tp_lofreq,
+  category.names = c("FGB", "GC", "MD", "UCOL", "UT"),
+  fill = colors,
+  filename = "plots/venn_lofreq.tiff",
+  margin = 0.15,
+  lwd = 2,
+  cex = 1.3,
+  fontface = "bold",
+  cat.fontface = "bold"
+)
+```
+
+## VarDict
+
+```{r}
+# Convert each list of GeneticVariants in benchmarks_vardict[[1]] to a list of characters
+tp_vardict <- get_tp(benchmarks_vardict[[1]])
+
+for (pipeline in get_pipeline_names(benchmarks_vardict[[1]])) {
+  tp_vardict[[pipeline]] <- as.character(lapply(get_tp(benchmarks_vardict[[1]])[[pipeline]], get_variant))
+}
+
+VennDiagram::venn.diagram(
+  x = tp_vardict,
+  category.names = c("FGB", "GC", "MD", "UCOL", "UT"),
+  fill = colors,
+  filename = "plots/venn_vardict.tiff",
+  margin = 0.15,
+  lwd = 2,
+  cex = 1.3,
+  fontface = "bold",
+  cat.fontface = "bold"
+)
+```
+
+# Additional analyses
+
+## Comparison between variant callers
+
+We can compare the variant callers by their mean true positives, false positives and false negatives.
+
+```{r}
+# Join all the final dataframes
+mean_mutect2$caller <- "mutect2"
+mean_lofreq$caller <- "lofreq"
+mean_vardict$caller <- "vardict"
+
+mean_all <- rbind(mean_mutect2, mean_lofreq, mean_vardict)
+```
+
+### True positives
+
+```{r}
+ggplot(mean_all, aes(x = caller, y = tp_mean, fill = pipeline_names)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = tp_mean - tp_sd, ymax = tp_mean + tp_sd), width = 0.2, position = position_dodge(0.9)) +
+  geom_text(aes(label = sprintf("%.2f", tp_mean), y = 0), hjust = -0.55, position = position_dodge(width = 0.9), size = 4, angle = 90) +
+  labs(x = "Variant caller", y = "True positives", title = "Mean true positives by calling attempt") +
+  theme_bw()
+```
+
+### False positives
+
+```{r}
+ggplot(mean_all, aes(x = caller, y = fp_mean, fill = pipeline_names)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = fp_mean - fp_sd, ymax = fp_mean + fp_sd), width = 0.2, position = position_dodge(0.9)) +
+  geom_text(aes(label = sprintf("%.2f", fp_mean), y = 0), hjust = -0.55, position = position_dodge(width = 0.9), size = 4, angle = 90) +
+  labs(x = "Variant caller", y = "False positives", title = "Mean false positives by calling attempt") +
+  theme_bw()
+```
+
+### False negatives
+
+```{r}
+ggplot(mean_all, aes(x = caller, y = fn_mean, fill = pipeline_names)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin = fn_mean - fn_sd, ymax = fn_mean + fn_sd), width = 0.2, position = position_dodge(0.9)) +
+  geom_text(aes(label = sprintf("%.2f", fn_mean), y = 0), hjust = -0.55, position = position_dodge(width = 0.9), size = 4, angle = 90) +
+  labs(x = "Variant caller", y = "False negatives", title = "Mean false negatives by calling attempt") +
+  theme_bw()
+```
