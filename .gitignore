@@ -2,12 +2,9 @@ data
 databases
 metadata
 old
-plots
-results_brp
-results_umivar
+results
 software
 stats
 tmp
 utils/link_samples_to_data.sh
-screenlog.dedup_bm
 config.conf

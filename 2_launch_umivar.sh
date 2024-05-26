@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #-------------------------------------------------------------------------------
-# 2_umivar_launch.sh
+# 2_launch_umivar.sh
 #-------------------------------------------------------------------------------
 # Script to launch the UMIvar simulation on a set of samples specified in the
 # config.conf file (SAMPLES_UMIVAR). For benchmarking purposes, after testing.

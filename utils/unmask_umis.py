@@ -3,7 +3,7 @@
 #-------------------------------------------------------------------------------
 # This script takes as input two FASTQ files (paired end reads) and outputs the
 # same files with unmasked UMIs. A dictionary is used to store the UMI masked 
-# sequence and a 12 bp UMI is randomly generated for that sequence.
+# sequence and a 16 bp UMI is randomly generated for that sequence.
 #-------------------------------------------------------------------------------
 
 import sys
@@ -14,10 +14,14 @@ import subprocess
 
 masked_to_umi = {}
 
+UMI_LENGTH = 16  #$ Set length of UMI
+
+random.seed(12)
+
 
 def random_umi():
     umi = ""
-    for i in range(12):
+    for i in range(UMI_LENGTH):
         umi += random.choice("ATCG")
     return umi
 

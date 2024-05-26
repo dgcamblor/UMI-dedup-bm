@@ -7,7 +7,7 @@
 #' @param title Title of the plot
 #' @param image_path Path to save the image (.tiff)
 
-generate_rp_plot <- function(data, pipeline_names, level_order, full_names, title, image_path) {
+dbm_rpplot <- function(data, pipeline_names, level_order, full_names, title, image_path) {
   if (length(level_order) != length(pipeline_names)) {
     print("Check the pipeline names and the level order")
     stop()

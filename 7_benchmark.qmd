@@ -7,17 +7,17 @@ number-sections: true
 ---
 
 ```{r}
-# Set working directory
 setwd("/media/scratchDELLEMC/dedup_bm")
 ```
 
 ```{r}
-# Load libraries
-pacman::p_load(tidyverse); set_theme(theme_bw())
+pacman::p_load(tidyverse); theme_set(theme_bw())
+pacman::p_load(plotly)
 pacman::p_load(vcfR)
 ```
 
 ```{r}
+#' Load all the functions in the R directory
 load_functions <- function(path) {
   for (f in list.files(path=path, pattern="*.R")) {
     source(paste(path, f, sep="/"))
@@ -61,11 +61,15 @@ print(paste("UMIvar mean median coverage:", sample_means_umivar$mean_median_cov)
 
 We can plot the stats outputted by several deduplication software.
 
+First, we evaluate the BRP deduplication stats, taking as example the `SRR13200987` accession.
+
 ```{r}
 plot_stats_FGB("stats/SRR13200987/SRR13200987.dedup_FGB.grouped.hist.txt")
 plot_stats_MD("stats/SRR13200987/SRR13200987.dedup_MD.metrics")
 plot_stats_UT("stats/SRR13200987/SRR13200987.dedup_UT.stats_per_umi_per_position.tsv")
 ```
+
+We can also evaluate the UMIvar deduplication stats, taking as example the `EN104` ID.
 
 ```{r}
 plot_stats_FGB("stats/umivar/EN104/EN104.dedup_FGB.grouped.hist.txt")
@@ -75,39 +79,145 @@ plot_stats_UT("stats/umivar/EN104/EN104.dedup_UT.stats_per_umi_per_position.tsv"
 
 # UMIvar testing
 
-To test the functioning of UMIvar alone, a pilot study was conducted. The `comp_umivar_test.csv` file is obtained from the `utils/test_umivar.sh` script.
+To test the functioning of UMIvar alone, an initial evaluation study was conducted. A set of variants was generated (`0_generate_input.sh`) and they were simulated with UMIvar, then called with VarDict (`1_test_umivar.sh`). The results can be compared with the input VAFs.
 
 ```{r}
-testing_results <- read.csv("results_umivar/test_umivar_results.csv")
+test_res <- read.csv("results/umivar_test/test_umivar_results.csv")
 
-testing_results_longer <- testing_results %>% pivot_longer(cols = starts_with("EP"), names_to = "EP_sample", values_to = "EP_equivalent")
+# input: user input to UMIvar
+test_res_input <- test_res %>% 
+  select(var, af, EP7_vardict, EP9_vardict, EP11_vardict, EP13_vardict, EP49_vardict, EP63_vardict, EP85_vardict)
+
+test_res_input_longer <- test_res_input %>% 
+  pivot_longer(cols = starts_with("EP"), names_to = "EP_sample", values_to = "EP_equivalent")
+
+# umivar: umivar estimates of VAFs and non-simulated variants
+test_res_umivar <- test_res %>% 
+  select(var, starts_with("EP"))
+
+test_res_umivar_longer <- test_res_umivar %>% 
+  pivot_longer(cols = starts_with("EP"), names_to = "EP_sample", values_to = "AF") %>% 
+  mutate(sample = str_extract(EP_sample, "^[^_]+"),
+         type = str_extract(EP_sample, "[^_]+$")) %>% 
+  select(var, sample, type, AF)
 ```
 
+## Input UMIvar vs. variant calling
+
 ```{r}
-# Compute the RMSE for the UMIvar testing
-rmse <- sqrt(mean((testing_results_longer$EP_equivalent - testing_results_longer$af)^2))
+test_res_input_rmse <- test_res_input_longer %>%
+  group_by(var) %>% 
+  summarize(mean_input = mean(af),
+            mean_vardict = mean(EP_equivalent))
+
+# Compute the RMSE for the UMIvar testing: the difference between the input VAF and the mean of the VarDict VAFs
+rmse <- sqrt(mean((test_res_input_rmse$mean_vardict - test_res_input_rmse$mean_input)^2))
 print(paste0("The RMSE for the UMIvar AFs is: ", rmse))
 ```
 
 We can flag those variants that are outliers, i.e. those that have in the 5% of the distribution of the absolute difference between the UMIvar AF and the equivalent EP AF.
 
 ```{r}
-testing_results <- testing_results %>%
-  mutate(mean_EP = rowMeans(select(., starts_with("EP"))),
-         abs_diff = abs(af - mean_EP)) %>%
+test_res_input <- test_res_input %>%
+  mutate(mean_vardict = rowMeans(select(., starts_with("EP"))),
+         abs_diff = abs(af - mean_vardict)) %>%
   mutate(outlier = ifelse(abs_diff > quantile(abs_diff, 0.95), "yes", "no"))
 ```
 
-Finally, we can plot the testing results.
+Finally, we can plot the testing results as a scatter plot, with the UMIvar AF in the x-axis and the equivalent EP AF in the y-axis. Outliers are flagged in red.
 
 ```{r}
-testing_results %>%
-  ggplot(aes(x = af, y = mean_EP, color = outlier)) +
+p <- test_res_input %>%
+  ggplot(aes(x = af, y = mean_vardict, color = outlier, label = var)) +
   geom_point() +
   geom_abline(intercept = 0, slope = 1, color = "blue") +
   labs(x = "UMIvar input AF", y = "VarDict called AF") +
   scale_color_manual(values = c("black", "red"))
+
+ggplotly(p)
 ```
+
+We can summarize how many variants were correctly called with a difference of 5% or less between the UMIvar input and VarDict VAFs. We can also summarize how many variants have not been called by VarDict.
+
+```{r}
+test_res_input_longer_diff <- test_res_input_longer %>% 
+  # Compute the absolute difference between the UMIvar and EP AFs
+  mutate(abs_diff = abs(EP_equivalent - af))
+
+testing_summary <- test_res_input_longer_diff %>%
+  group_by(EP_sample) %>%
+  summarize(n_zero_AF = sum(EP_equivalent == 0),
+            n_diff_5 = sum(EP_equivalent != 0 & abs_diff < 0.05))
+```
+
+Compute mean +/- SD of the n_zero_AF and n_diff_5 columns.
+
+```{r}
+testing_summary %>% 
+  summarize(mean_zero_AF = mean(n_zero_AF),
+            sd_zero_AF = sd(n_zero_AF),
+            mean_diff_5 = mean(n_diff_5),
+            sd_diff_5 = sd(n_diff_5))
+```
+
+## Evaluation of outliers
+
+We can create a BED file containing each of the outliers for visualization using IGV.
+
+```{r}
+outliers <- test_res_input %>%
+  filter(outlier == "yes") %>%
+  mutate(chr = str_split_fixed(var, ":", 2)[,1],
+         rest = str_split_fixed(var, ":", 2)[,2]) %>% 
+  select(chr, rest, af) %>% 
+  # The position is the result of removing anything that is not a digit from the rest of the variant
+  mutate(pos = as.numeric(gsub("\\D", "", rest)),
+         var = gsub("\\d", "", rest)) %>% 
+  mutate(var_af = paste0(var, " (AF: ", round(af, 2), ")")) %>%
+  mutate(start = pos - 1, end = pos) %>%
+  select(chr, start, end, var_af)
+
+write.table(outliers, "results/umivar_test/umivar_outliers.bed", sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+These outliers will be visualized in IGV to check if they have been simulated incorrectly or, on the contrary, if they are the result of no reads being available for simulation or to VarDict not calling them.
+
+## UMIvar output vs. variant calling
+
+```{r}
+test_res_umivar_wider <- test_res_umivar_longer %>% 
+  pivot_wider(names_from = type, values_from = AF)
+
+test_res_umivar_rmse <- test_res_umivar_wider %>%
+  group_by(var) %>% 
+  summarize(mean_umivar = mean(umivar),
+            mean_vardict = mean(vardict))
+
+# Calculate the RMSE between the mean UMIvar and VarDict AFs
+rmse <- sqrt(mean((test_res_umivar_rmse$mean_umivar - test_res_umivar_rmse$mean_vardict)^2))
+print(paste0("The RMSE for the UMIvar AFs is: ", rmse))
+```
+
+## Strand bias
+
+Real variants should not have strand bias. We can check the strand bias of the UMIvar output.
+
+```{r}
+files <- list.files("/media/scratchDELLEMC/dedup_bm/data/umivar_test", 
+                    pattern = "_UV.csv", 
+                    full.names = TRUE, 
+                    recursive = TRUE)
+
+# Read all files and bind them together
+umivar_strand_bias <- lapply(files, read_csv) %>% bind_rows()
+
+# Compute the mean and SD of the strand bias
+umivar_strand_bias %>%
+  summarize(mean_strand_bias = mean(sb),
+            sd_strand_bias = sd(sb))
+```
+
+The UMIvar estimation is performed so that values close to 0 indicate no strand bias.
 
 # Benchmarking
 
@@ -120,7 +230,7 @@ if (profile == "BRP") {
   true_variants <- extract_variants("metadata/KnownPositives_hg19_target_norm.vcf", af_meta="fix", af_name="VAF")
   accessions <- c("SRR13200987", "SRR13200988", "SRR13200990", "SRR13200991", 
                   "SRR13200996", "SRR13200997", "SRR13200998", "SRR13200999")
-  results_dir <- "results_brp"
+  results_dir <- "results/brp"
   
 } else {
   true_variants <- extract_variants_umivar("metadata/umivar_input.csv")
@@ -129,7 +239,7 @@ if (profile == "BRP") {
                   "EN88", "EN90", "EN92", "EN100", "EN102", 
                   "EN104", "EN110", "EN114", "EN131", "EN140", 
                   "EN146", "EN158", "EN161", "EN185")
-  results_dir <- "results_umivar"
+  results_dir <- "results/umivar"
 }
 ```
 
@@ -157,12 +267,12 @@ mean_lofreq <- summarize_vc_stats(stats_lofreq)
 
 ## VarDict
 
-```{r}
-vardict <- run_vc_benchmark("vardict", profile = "UMIVAR")
+```{r, eval = FALSE}
+vardict <- run_vc_benchmark("vardict", profile = profile)
 benchmarks_vardict <- vardict$benchmarks; stats_vardict <- vardict$stats
 ```
 
-```{r}
+```{r, eval = FALSE}}
 mean_vardict <- summarize_vc_stats(stats_vardict)
 ```
 
@@ -181,8 +291,7 @@ True positives:
 ```{r}
 dedup_bm_barplot(mean_mutect2, "tp", level_order, full_names,
                  title = "Mean true positives for Mutect2", 
-                 image_path = "plots/mean_tp_mutect2.tiff") +
-  coord_cartesian(ylim = c(450, 550))
+                 image_path = "plots/mean_tp_mutect2.tiff")
 ```
 
 False positives:
@@ -218,7 +327,7 @@ dedup_bm_barplot(mean_lofreq, "fp", level_order, full_names,
 
 True positives:
 
-```{r}
+```{r, eval = FALSE}}
 dedup_bm_barplot(mean_vardict, "tp", level_order, full_names,
                  title = "Mean true positives for VarDict", 
                  image_path = "plots/mean_tp_vardict.tiff")
@@ -226,7 +335,7 @@ dedup_bm_barplot(mean_vardict, "tp", level_order, full_names,
 
 False positives:
 
-```{r}
+```{r, eval = FALSE}}
 dedup_bm_barplot(mean_vardict, "fp", level_order, full_names,
                  title = "Mean false positives for VarDict", 
                  image_path = "plots/mean_fp_vardict.tiff", 
@@ -253,7 +362,7 @@ rp_plot(stats_lofreq, pipeline_names, level_order, full_names,
 
 ## VarDict
 
-```{r}
+```{r, eval = FALSE}}
 rp_plot(stats_vardict, pipeline_names, level_order, full_names, 
         title = "Recall vs. precision for VarDict", 
         image_path = "plots/rp_vardict.tiff")
@@ -315,7 +424,7 @@ VennDiagram::venn.diagram(
 
 ## VarDict
 
-```{r}
+```{r, eval = FALSE}}
 # Convert each list of GeneticVariants in benchmarks_vardict[[1]] to a list of characters
 tp_vardict <- get_tp(benchmarks_vardict[[1]])
 

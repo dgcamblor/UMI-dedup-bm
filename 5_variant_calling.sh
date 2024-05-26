@@ -21,7 +21,7 @@ if [ $PROFILE == "BRP" ]; then
     MILLS_INDEL=${MILLS_INDEL_HG19}
 
     data_dir="data"
-    results_dir="results_brp"
+    results_dir="results/brp"
 
 elif [ $PROFILE == "UMIVAR" ]; then
     TARGET=${TARGET_UMIVAR}
@@ -31,7 +31,7 @@ elif [ $PROFILE == "UMIVAR" ]; then
     MILLS_INDEL=${MILLS_INDEL_GRCH38}
 
     data_dir="data/umivar"
-    results_dir="results_umivar"
+    results_dir="results/umivar"
 
 fi
 
@@ -40,13 +40,6 @@ header "Variant calling"
 
 for sample in ${SAMPLES[@]}; do
     dedup_prefix=${data_dir}/${sample}/${sample}.dedup
-
-    # If not moved to _NONE, do it
-    if [ ! -f ${dedup_prefix}_NONE.sorted.bam ]; then
-        mv ${data_dir}/${sample}/${sample}.sorted.bam ${dedup_prefix}_NONE.sorted.bam
-    fi
-
-    samtools index ${dedup_prefix}_NONE.sorted.bam
 
     #---------------------------------------------------------------------------
     # Preprocessing

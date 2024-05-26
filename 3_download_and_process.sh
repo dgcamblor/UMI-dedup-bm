@@ -62,7 +62,7 @@ if [[ ! $PATH =~ .*sratoolkit.* ]]; then
 fi
 
 # For each sample in BRP_AccList.txt, convert the corresponding file to fastq using fasterq-dump
-for sample in ${SAMPLES[@]}; do
+for sample in ${SAMPLES_BRP[@]}; do
     # If the pipeline.done file exists, skip this accession
     if [ -f "data/${sample}/download.done" ]; then
         echo "Skipping $sample"
@@ -111,5 +111,4 @@ for sample in ${SAMPLES[@]}; do
 
     # End the pipeline
     touch data/${sample}/download.done
-    
 done

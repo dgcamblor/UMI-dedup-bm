@@ -3,6 +3,9 @@
 #-------------------------------------------------------------------------------
 # create_umivar_target.sh
 #-------------------------------------------------------------------------------
+# Create a target bed file for UMIvar evaluation.
+# Exonic regions of cancer genes are extracted from the exome bed file.
+#-------------------------------------------------------------------------------
 
 function create_umivar_target() {
     local exome_bed_file="$1"  #$ A bed file containing the exome regions

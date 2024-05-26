@@ -4,7 +4,7 @@
 # 6_gather_stats.sh
 #-------------------------------------------------------------------------------
 # Obtain different stats from the benchmarking.
-# Stats are obtained from UMItools deduplication files.
+# Stats are obtained from UMI-tools deduplication files.
 #-------------------------------------------------------------------------------
 
 source config.conf; source utils/header.sh

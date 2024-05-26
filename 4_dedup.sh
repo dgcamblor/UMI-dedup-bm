@@ -17,6 +17,7 @@ if [ $PROFILE == "BRP" ]; then
     REF_GENOME=${REF_GENOME_HG19}
     SAMPLES=(${SAMPLES_BRP[@]})
     READ_STRUCTURE=${READ_STRUCTURE_BRP}
+    MAX_EDITS=0  # Force identity (UMI sequences are arbitrarily assigned to masked UMIs)
 
     data_dir="data"
     stats_dir="stats"
@@ -26,6 +27,7 @@ elif [ $PROFILE == "UMIVAR" ]; then
     REF_GENOME=${REF_GENOME_GRCH38}
     SAMPLES=(${SAMPLES_UMIVAR[@]})
     READ_STRUCTURE=${READ_STRUCTURE_UMIVAR}
+    MAX_EDITS=1  # Allow 1 edit distance for UMI sequences (usual default)
 
     data_dir="data/umivar"
     stats_dir="stats/umivar"
@@ -96,21 +98,35 @@ for sample in ${SAMPLES[@]}; do
     #---------------------------------------------------------------------------
     # UMI-tools dedup
     #---------------------------------------------------------------------------
-    
-    echo -e "${BBLUE}Deduplicating with UMI-tools for ${sample}${NC}"
-    umi_tools dedup \
-        -I ${data_dir}/${sample}/${sample}.sorted.bam \
-        --paired \
-        -S ${data_dir}/${sample}/${sample}.dedup_UT.bam \
-        --method adjacency \
-        --edit-distance-threshold $MAX_EDITS \
-        --output-stats ${stats_dir}/${sample}/${sample}.dedup_UT.stats \
-        --no-sort-output
 
+    # If using BRP profile, use UMI identities without any edits
+    if [ $PROFILE == "BRP" ]; then
+        echo -e "${BBLUE}Deduplicating with UMI-tools for ${sample} (no edits)${NC}"
+        umi_tools dedup \
+            -I ${data_dir}/${sample}/${sample}.sorted.bam \
+            --paired \
+            -S ${data_dir}/${sample}/${sample}.dedup_UT.bam \
+            --method unique \
+            --output-stats ${stats_dir}/${sample}/${sample}.dedup_UT.stats \
+            --no-sort-output
+
+    elif [ $PROFILE == "UMIVAR" ]; then
+        echo -e "${BBLUE}Deduplicating with UMI-tools for ${sample} (edits = 1)${NC}"
+        umi_tools dedup \
+            -I ${data_dir}/${sample}/${sample}.sorted.bam \
+            --paired \
+            -S ${data_dir}/${sample}/${sample}.dedup_UT.bam \
+            --method adjacency \
+            --edit-distance-threshold $MAX_EDITS \
+            --output-stats ${stats_dir}/${sample}/${sample}.dedup_UT.stats \
+            --no-sort-output
+
+    fi
+    
     # Sort and index
     samtools sort -@ $N_CORES -o ${data_dir}/${sample}/${sample}.dedup_UT.sorted.bam ${data_dir}/${sample}/${sample}.dedup_UT.bam; rm ${data_dir}/${sample}/${sample}.dedup_UT.bam
     samtools index ${data_dir}/${sample}/${sample}.dedup_UT.sorted.bam
-        
+
     #---------------------------------------------------------------------------
     # fgbio (best practices implementation)
     #---------------------------------------------------------------------------
@@ -119,7 +135,7 @@ for sample in ${SAMPLES[@]}; do
 
     # Process the reads into an unmapped BAM file: UMIs are added to tags
     echo -e "${BLUE}Creating unmapped bam with UMIs ${sample}${NC}"
-    fgbio --compression 1 --async-io FastqToBam \
+    fgbio --tmp-dir ${TMP_DIR} --compression 1 --async-io FastqToBam \
         --input ${R1_UIS} ${R2} \
         --read-structures ${READ_STRUCTURE} \
         --sample ${sample} \
@@ -131,27 +147,38 @@ for sample in ${SAMPLES[@]}; do
     echo -e "${BLUE}Realigning the unmapped BAM for ${sample}${NC}"
     samtools fastq ${data_dir}/${sample}/${sample}.unmapped.bam \
         | ${bwa2} mem -t ${N_CORES} -p -K 150000000 -Y ${REF_GENOME} - \
-        | fgbio --compression 1 --async-io ZipperBams \
+        | fgbio --tmp-dir ${TMP_DIR} --compression 1 --async-io ZipperBams \
             --unmapped ${data_dir}/${sample}/${sample}.unmapped.bam \
             --ref ${REF_GENOME} \
             --output ${data_dir}/${sample}/${sample}.mapped.bam
 
     rm ${data_dir}/${sample}/${sample}.unmapped.bam
 
-    # Group reads by UMI, following the umi-tools algorithm
-    echo -e "${BLUE}Grouping reads by UMI for ${sample}${NC}"
-    fgbio --compression 1 --async-io GroupReadsByUmi \
-        --input ${data_dir}/${sample}/${sample}.mapped.bam \
-        --strategy Adjacency \
-        --edits $MAX_EDITS \
-        --output ${data_dir}/${sample}/${sample}.grouped.bam \
-        --family-size-histogram ${stats_dir}/${sample}/${sample}.dedup_FGB.grouped.hist.txt
+    # Group reads by UMI
+    if [ $PROFILE == "BRP" ]; then
+        echo -e "${BLUE}Grouping reads by UMI for ${sample}${NC}"
+        fgbio --tmp-dir ${TMP_DIR} --compression 1 --async-io GroupReadsByUmi \
+            --input ${data_dir}/${sample}/${sample}.mapped.bam \
+            --strategy Identity \
+            --edits $MAX_EDITS \
+            --output ${data_dir}/${sample}/${sample}.grouped.bam \
+            --family-size-histogram ${stats_dir}/${sample}/${sample}.dedup_FGB.grouped.hist.txt
+
+    elif [ $PROFILE == "UMIVAR" ]; then
+        fgbio --tmp-dir ${TMP_DIR} --compression 1 --async-io GroupReadsByUmi \
+            --input ${data_dir}/${sample}/${sample}.mapped.bam \
+            --strategy adjacency \
+            --edits $MAX_EDITS \
+            --output ${data_dir}/${sample}/${sample}.grouped.bam \
+            --family-size-histogram ${stats_dir}/${sample}/${sample}.dedup_FGB.grouped.hist.txt
+
+    fi
 
     rm ${data_dir}/${sample}/${sample}.mapped.bam
 
     # Call molecular consensus reads
     echo -e "${BLUE}Calling molecular consensus reads for ${sample}${NC}"
-    fgbio --compression 1 CallMolecularConsensusReads \
+    fgbio --tmp-dir ${TMP_DIR} --compression 1 CallMolecularConsensusReads \
         --input ${data_dir}/${sample}/${sample}.grouped.bam \
         --output ${data_dir}/${sample}/${sample}.cons.unmapped.bam \
         --min-reads $SUPP_READS \
@@ -163,7 +190,7 @@ for sample in ${SAMPLES[@]}; do
     echo -e "${BLUE}Re-aligning the consensus reads for ${sample}${NC}"
     samtools fastq ${data_dir}/${sample}/${sample}.cons.unmapped.bam \
         | ${bwa2} mem -t ${N_CORES} -p -K 150000000 -Y ${REF_GENOME} - \
-        | fgbio --compression 1 --async-io ZipperBams \
+        | fgbio --tmp-dir ${TMP_DIR} --compression 1 --async-io ZipperBams \
             --unmapped ${data_dir}/${sample}/${sample}.cons.unmapped.bam \
             --ref ${REF_GENOME} \
             --tags-to-reverse Consensus \
@@ -207,15 +234,22 @@ for sample in ${SAMPLES[@]}; do
     # gencore
     #---------------------------------------------------------------------------
 
+    # Convert all "_" to ":" in the BAM file (gencore requirement)
+    samtools view -h ${data_dir}/${sample}/${sample}.sorted.bam | sed 's/_/:/g' | samtools view -b - > ${data_dir}/${sample}/${sample}.sorted.gc.bam
+
     echo -e "${BBLUE}Deduplicating with gencore for ${sample}${NC}"
     gencore \
-        -i ${data_dir}/${sample}/${sample}.sorted.bam \
+        -i ${data_dir}/${sample}/${sample}.sorted.gc.bam \
         -o ${data_dir}/${sample}/${sample}.dedup_GC.bam \
         -r $REF_GENOME \
+        --umi_prefix "" \
+        --no_duplex \
         --supporting_reads $SUPP_READS \
         --umi_diff_threshold $MAX_EDITS \
         --json ${stats_dir}/${sample}/${sample}.dedup_GC.json \
         --html ${stats_dir}/${sample}/${sample}.dedup_GC.html
+
+    rm ${data_dir}/${sample}/${sample}.sorted.gc.bam
 
     # Sort and index
     samtools sort -@ $N_CORES -o ${data_dir}/${sample}/${sample}.dedup_GC.sorted.bam ${data_dir}/${sample}/${sample}.dedup_GC.bam

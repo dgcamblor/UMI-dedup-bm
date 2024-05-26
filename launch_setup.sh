@@ -95,13 +95,3 @@ conda install -c bioconda umicollapse -y
 
 # gencore
 conda install -c bioconda gencore -y
-
-#-------------------------------------------------------------------------------
-# File processing
-#-------------------------------------------------------------------------------
-
-# Create on-target true variants (SEQC2 known positives and BRP sequenced regions)
-bedtools intersect -a metadata/KnownPositives_hg19.vcf.gz -b metadata/LBx_BRP_hg19.bed -header > metadata/KnownPositives_hg19_target.vcf
-
-# Normalize VCF
-bcftools norm -m-any -o metadata/KnownPositives_hg19_target_norm.vcf metadata/KnownPositives_hg19_target.vcf
